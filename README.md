@@ -12,7 +12,7 @@ The pipeline is **parameter-driven**, meaning all behavior is controlled through
 
 ---
 
-## 🚨 Start Here
+## Start Here
 Before running anything:
 
 👉 **1. Read `create_params()` carefully**  
@@ -24,8 +24,6 @@ This file defines:
 - Motion detection & correction methods  
 - Filtering and hemoglobin conversion  
 - Postprocessing (nuisance regression, epoching, etc.)
-
-⚠️ The pipeline depends heavily on correct parameterization.
 
 ---
 
@@ -61,13 +59,13 @@ This file defines:
 
 ## Data Structure
 
-### 📥 Raw Data
+### Raw Data
 rawdir/
-G01/
-S01_*/
-*.snirf
-*.tri
-probeInfo.mat
+  G01/
+    S01_*/
+      *.snirf
+      *.tri
+      probeInfo.mat
 
 
 - Works with **SNIRF files** (e.g., NIRx NIRSport2 systems)
@@ -76,13 +74,13 @@ probeInfo.mat
 
 ---
 
-### 📤 Output Data
+### Output Data
 outdir/
-G01/
-S01_/
-S01_preprocessed.mat
-S01_postprocessed.mat
-S01_EpochXX*.csv
+  G01/
+    S01_/
+      S01_preprocessed.mat
+      S01_postprocessed.mat
+      S01_EpochXX*.csv
 group_qc_summary.mat
 
 
