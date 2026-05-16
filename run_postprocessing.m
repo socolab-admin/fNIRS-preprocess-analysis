@@ -159,7 +159,8 @@ for i = 1:length(groupdirs)
             tri_codes   = data_preprocessed.tri_raw{3};
         
             nCond = length(params.post.stim.cond);
-        
+            stim(1, nCond) = StimClass();   % preallocate object array
+            
             for c = 1:nCond
         
                 cond = params.post.stim.cond(c);
