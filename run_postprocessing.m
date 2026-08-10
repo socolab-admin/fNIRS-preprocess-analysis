@@ -123,7 +123,7 @@ for i = 1:length(groupdirs)
             fprintf('Skipping bad subject %s\n', subjectID);
             continue
         end
-
+        fprintf('\n');
         fprintf('Processing subject %s\n', subjectID);
 
         % ===============================
@@ -175,14 +175,80 @@ for i = 1:length(groupdirs)
         
                 % ---- convert to time ----
                 onset_samples = tri_samples(idx);
+                %disp(onset_samples)
                 start_idx = find(tri_codes == params.trim.start_trigger, 1, 'first');
                 buffer = round(params.trim.buffer*fs); 
                 %disp(buffer)
                 firstSample = tri_samples(start_idx) - buffer;
+                %disp(firstSample)
                 %start_idx = find(ismember(tri_codes, params.trim.start_trigger));
+                
+                % Handle trigger codes that match different conditions -
+                % check duration of condition
+                if cond.same == true
+                    idx = find(ismember(tri_codes, cond.end_triggers));
+    
+                    if isempty(idx)
+                        warning('No triggers found for %s', cond.name);
+                        continue
+                    end
+            
+            
+                    condDuration = round(cond.duration * fs);
+
+                    toleranceSec = 3;
+                    toleranceSamples = round(toleranceSec * fs);
+
+                    onset_samples  = [];
+                    offset_samples = [];
+
+                    lastOnsetSample = [];
+                    
+
+                    for k = 1:numel(tri_codes)
+                        code = tri_codes(k);
+                        samp = tri_samples(k);
+
+                        if ismember(code, cond.start_triggers)
+                            % remember the most recent 1
+                            lastOnsetSample = samp;
+
+                        elseif ismember(code, cond.end_triggers)
+                            % pair this 3 with the nearest preceding 1
+                            if ~isempty(lastOnsetSample)
+                                onset_samples(end+1,1)  = lastOnsetSample; %#ok<AGROW>
+                                offset_samples(end+1,1) = samp;            %#ok<AGROW>
+                                lastOnsetSample = [];  % consume that 1
+                            end
+                        end
+                    end
+
+                    if isempty(onset_samples)
+                        warning('No valid onset-offset pairs found for %s', cond.name);
+                        continue
+                    end
+
+                    pairDurations = offset_samples - onset_samples;
+                    valid_idx = pairDurations > 0 & abs(pairDurations - condDuration) <= toleranceSamples;
+
+                    onset_samples  = onset_samples(valid_idx);
+                    fprintf('Valid\n')
+                    disp(onset_samples)
+
+                    %if numel(onset_samples) > 1
+                        %onset_samples = onset_samples(1);
+                    %end
+
+                end 
+
                 onset_samples = onset_samples - firstSample + 1;
-                %disp(onset_samples);
+                disp(size(t))
+
+                %cond_onsets = onset_samples / fs;
+
+                disp(onset_samples);
                 cond_onsets = t(onset_samples);
+                %fprintf("Cond Onsets\n")
                 %disp(cond_onsets)
 
                 % ---- duration + amplitude ----
@@ -197,7 +263,7 @@ for i = 1:length(groupdirs)
         
                 % ---- debug ----
                 fprintf('Condition %s: %d events\n', cond.name, n);
-                end
+            end
             
             else
                 warning('No stim parameters found — skipping stim creation');
@@ -227,10 +293,12 @@ for i = 1:length(groupdirs)
         data_preprocessed.HbO = HbO_proc;
         data_preprocessed.HbR = HbR_proc;
         
-        data_postprocessed{i,j} = data_preprocessed;
-
+        data_postprocessed{i, j} = data_preprocessed;
+        
         outfile = fullfile(subjectfolder, [subjectID '_postprocessed.mat']);
-        save(outfile, 'data_postprocessed');
+        
+        subject_postprocessed = data_preprocessed;   % save only current subject
+        save(outfile, 'subject_postprocessed');
 
     end
 end
@@ -310,7 +378,12 @@ fs = data_preprocessed.fs;
 tri_samples = data_preprocessed.tri_raw{2};
 tri_codes   = data_preprocessed.tri_raw{3};
 
-HRF_shift = round(params.post.epoch.hrf_delay_sec * fs);
+if HbType == "HbO"
+    HRF_shift = round(params.post.epoch.hbo_hrf_delay_sec * fs);
+else
+    HRF_shift = round(params.post.epoch.hbr_hrf_delay_sec * fs);
+end
+
 %disp(HRF_shift);
 
 chanSrcDet = data_preprocessed.probeInfo.probes.index_c;
@@ -321,18 +394,19 @@ chanLabels = arrayfun(@(i) ...
 labels = ['time', chanLabels(:)'];
 
 for c = 1:length(stim)
-
+    %disp(c)
     condName = params.post.stim.cond(c).name;
+    %fprintf(condName)
+    %disp(stim)
+    if isempty(stim(1, c).data)
+        continue
+    end
 
     % ===============================
     % ONSETS
     % ===============================
     idx = ismember(tri_codes, params.post.stim.cond(c).start_triggers);
     onsets_samples = tri_samples(idx);
-    start_idx = find(tri_codes == params.trim.start_trigger, 1, 'first');
-    buffer = round(params.trim.buffer*fs); 
-    firstSample = tri_samples(start_idx) - buffer;
-    onsets_samples = onsets_samples - firstSample + 1;
     %disp(onsets_samples);
 
     % ===============================
@@ -340,16 +414,85 @@ for c = 1:length(stim)
     % ===============================
     idx = ismember(tri_codes, params.post.stim.cond(c).end_triggers);
     offsets_samples = tri_samples(idx);
+    %disp(firstSample);
+    %disp(offsets_samples);
+
+    cond = params.post.stim.cond(c);
+
+    if cond.same == true
+        idx = find(ismember(tri_codes, cond.end_triggers));
+    
+        if isempty(idx)
+            warning('No triggers found for %s', cond.name);
+            continue
+        end
+            
+            
+        condDuration = round(cond.duration * fs);
+
+        toleranceSec = 3;
+        toleranceSamples = round(toleranceSec * fs);
+        
+        onsets_samples  = [];
+        offsets_samples = [];
+        lastOnsetSample = [];
+        
+        for k = 1:numel(tri_codes)
+            code = tri_codes(k);
+            samp = tri_samples(k);
+
+            if ismember(code, cond.start_triggers)
+                % remember the most recent 1
+                lastOnsetSample = samp;
+
+            elseif ismember(code, cond.end_triggers)
+                % pair this 3 with the nearest preceding 1
+                if ~isempty(lastOnsetSample)
+                    onsets_samples(end+1,1)  = lastOnsetSample; %#ok<AGROW>
+                    offsets_samples(end+1,1) = samp;            %#ok<AGROW>
+                    lastOnsetSample = [];  % consume that 1
+                end
+            end
+        end
+
+        if isempty(onsets_samples)
+            warning('No valid onsset-offset pairs found for %s', cond.name);
+            continue
+        end
+        
+        pairDurations = offsets_samples - onsets_samples;
+        valid_idx = pairDurations > 0 & abs(pairDurations - condDuration) <= toleranceSamples;
+
+        onsets_samples  = onsets_samples(valid_idx);
+        %fprintf('Valid onset\n');
+        %disp(onsets_samples);
+
+        offsets_samples = offsets_samples(valid_idx);
+        %fprintf('Valid offset\n');
+        %disp(offsets_samples);
+
+        %if numel(onset_samples) > 1
+            %onset_samples = onset_samples(1);
+        %end
+
+    end 
+
     start_idx = find(tri_codes == params.trim.start_trigger, 1, 'first');
     buffer = round(params.trim.buffer*fs); 
     firstSample = tri_samples(start_idx) - buffer;
-    %disp(firstSample);
-    offsets_samples = offsets_samples - firstSample + 1;
-    %disp(offsets_samples);
+
+    onset_samples = onsets_samples - firstSample + 1;
+    offset_samples = offsets_samples - firstSample + 1;
+    % Output epoch onsets 
+    fprintf('Valid epoch onset\n')
+    disp(onset_samples);
+    % Output epoch offsets 
+    fprintf('Valid epoch offset\n')
+    disp(offset_samples);
 
     % --- Number of epochs ---
-    nEpochs = length(onsets_samples);
-
+    nEpochs = length(onset_samples);
+    %disp(nEpochs);
     %offsets_sec = t(offsets_samples);
     %print("print offsets sec")
     %disp(offsets_sec)
@@ -360,10 +503,8 @@ for c = 1:length(stim)
 
     for k = 1:nEpochs
 
-        s = onsets_samples(k) + HRF_shift;
-        %disp(s)
-        e = offsets_samples(k) + HRF_shift;
-        %disp(e)
+        s = onset_samples(k) + HRF_shift;
+        e = offset_samples(k) + HRF_shift;
 
         if s < 1 || e > size(Hb,1)
             continue
@@ -376,7 +517,7 @@ for c = 1:length(stim)
         if params.post.epoch.use_zscore
             block = zscore(block);
         end
-        T = array2table([data_preprocessed.t(s:e), block], 'VariableNames', labels);
+        T = array2table([t(s:e), block], 'VariableNames', labels);
         
         % ===============================
         % SAVE FILE
@@ -389,7 +530,7 @@ for c = 1:length(stim)
         % ===============================
         % SAVE TO STRUCT
         % ===============================
-        data_preprocessed.post.epochs.(HbType).(condName){k} = T;
+        %data_preprocessed.post.epochs.(HbType).(condName){k} = T;
 
        % save / store
     end
@@ -423,4 +564,3 @@ end
 val = default_val;
 
 end
-
