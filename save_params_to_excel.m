@@ -55,11 +55,11 @@ for i = 1:length(selected)
         case "SNR"
             add(2, 'Channel QC', 'SNR Threshold', params.qc.thresholds.SNR);
 
-        case "CHV"
-            add(2, 'Channel QC', 'CHV Threshold', params.qc.thresholds.CHV);
+        case "QT"
+            add(2, 'Channel QC', 'QT Threshold', params.qc.thresholds.QT);
 
         case "PP"
-            add(2, 'Channel QC', 'PP Threshold', params.qc.thresholds.PP);
+            add(2, 'Channel QC', 'PSP Threshold', params.qc.thresholds.PSP);
 
     end
 end
@@ -82,6 +82,9 @@ method = params.motion.correct.method;
 add(4, 'Motion Correction', 'Method', method);
 
 switch method
+
+    case "tddr"
+        add(4, 'Motion Correction', 'Note', 'tddr requires no parameters');
 
     case "tPCA"
         add(4, 'Motion Correction', 'nSV', params.motion.correct.tPCA.nSV);
@@ -145,7 +148,8 @@ end
 % ===============================
 add(9, 'Epoch', 'Enabled', params.post.epoch.use);
 add(9, 'Epoch', 'Z-score', params.post.epoch.use_zscore);
-add(9, 'Epoch', 'HRF Delay (sec)', params.post.epoch.hrf_delay_sec);
+add(9, 'Epoch', 'HbO-HRF Delay (sec)', params.post.epoch.hbo_hrf_delay_sec);
+add(9, 'Epoch', 'HbR-HRF Delay (sec)', params.post.epoch.hbr_hrf_delay_sec);
 
 %% ===============================
 % BUILD TABLE
