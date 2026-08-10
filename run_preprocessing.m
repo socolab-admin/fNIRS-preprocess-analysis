@@ -98,7 +98,7 @@ groupdirs = dir(fullfile(rawdir, [groupprefix '*']));
 groupdirs = groupdirs([groupdirs.isdir]);
 
 % ---- QC data summary acculumators ---
-metrics = ["DetectorSat", "MotionClean", "SNR", "SCI", "PP", "CHV", "BadChan", "BadSub"];
+metrics = ["DetectorSat", "MotionClean", "SNR", "SCI", "PSP", "QT", "BadChan", "BadSub"];
 subject_fail_count = 0;
 subject_total_count = 0;
 all_quality_reports = {};   % store each subject's QC table
@@ -204,6 +204,8 @@ for i = 1:length(groupdirs)
             snirf_trimmed.data = snirf.data.copy;
             snirf_trimmed.aux = snirf.aux.copy;
             snirf_trimmed.probe = snirf.probe.copy;
+            snirf_trimmed.stim = snirf.stim.copy;
+            snirf_trimmed.metaDataTags = snirf.metaDataTags.copy;
 
             % ---- Load .tri file ----
             tri_path = fullfile(subjectfolder, tri_files(1).name);
@@ -233,9 +235,9 @@ for i = 1:length(groupdirs)
                 error('Start or end trigger not found');
             end
             
-            buffer = round(params.trim.buffer*fs); 
+            buffer_samples = round(params.trim.buffer*fs); 
             %disp(buffer)
-            firstSample = tri_samples(start_idx) - buffer;
+            firstSample = tri_samples(start_idx) - buffer_samples;
             lastSample  = tri_samples(end_idx);
                    
             fprintf('Trim start: %d\n', firstSample);
@@ -432,27 +434,23 @@ for i = 1:length(groupdirs)
             % 2) Proportion of clean motion (motion artifact detection)
             % 3) SNR (dB)
             % 4) Scalp Coupling Index (SCI)
-            % 5) Peak Spectral Power (PP) <under development>
-            % 6) High/Low Frequency CHV ratio (cardiac & hemo varability)
+            % 5) Peak Spectral Power (PSP) 
+            % 6) Quality Testing of Near-Infrared Scans <SCI & PS>
 
             % -------------------------------
             % Band-pass for cardiac signal
             % -------------------------------
             FilterType  = 1;   % Butterworth
-            FilterOrder_lpf = 3;
-            FilterOrder_hpf = 5;
-            
-            % Cardiac band: wide: 0.5-2.5; narrow: 0.7–1.5 Hz
-            [card_b, card_a] = MakeFilter(FilterType, FilterOrder_lpf, fs, params.qc.thresholds.SCI_band, 'bandpass');
-            %[card_b, card_a] = MakeFilter(FilterType, FilterOrder, fs, 0.5, 'high');
+            FilterOrder = 4;
+            freq_range = get_thresh(params, "heart_band", [0.5, 2.5]);
+            win_size = get_thresh(params, "window_size", 5);
 
-            % Hemodynamic band: wide: < 0.5 Hz
-            [hemo_b, hemo_a] = MakeFilter(FilterType, FilterOrder_lpf, fs, [0.01, 0.1], 'bandpass');
-            %[hemo_b, hemo_a] = MakeFilter(FilterType, FilterOrder_hpf, fs, 0.5, 'low');
+            % Cardiac band: wide: 0.5-2.5 (Default); narrow: 0.7–1.5/2 Hz
+            [card_b, card_a] = MakeFilter(FilterType, FilterOrder, fs, freq_range, 'bandpass');
+            %[card_b, card_a] = MakeFilter(FilterType, FilterOrder, fs, 0.5, 'high');
             
             % Apply filters (zero-phase)
             dheart  = filtfilt(card_b, card_a, d);   % cardiac oscillations
-            dsignal = filtfilt(hemo_b, hemo_a, d);   % slow hemodynamics
             
             % -------------------------------
             % Preallocate metrics
@@ -460,9 +458,6 @@ for i = 1:length(groupdirs)
             quality_report = zeros(8,numchannels);
             SNR_linear      = zeros(numchannels,1);
             SNR_dB          = zeros(numchannels,1);
-            SCI             = zeros(numchannels,1);
-            PP             = zeros(numchannels,1);
-            CHV             = zeros(numchannels,1);
             saturated_detectors = false(numchannels,1);
             motion_clean    = zeros(numchannels,1); %motion artifacts
             % Select bad channel metric parameter
@@ -548,76 +543,70 @@ for i = 1:length(groupdirs)
                 
                 quality_report(3,c) = SNR_dB(c);
 
-                % ---- 4) Scalp Coupling Index ----
-                %R = corrcoef(dheart(:,c), dheart(:,c + numchannels));
-                %SCI(c) = R(1,2);
-                x1 = dheart(:,c);
-                x2 = dheart(:,c + numchannels); 
-                if std(x1) == 0 || std(x2) == 0
-                    SCI(c) = NaN;
-                else
-                    x1 = (x1 - mean(x1)) / std(x1);
-                    x2 = (x2 - mean(x2)) / std(x2);
-                
-                    R = corrcoef(x1, x2);
-                    SCI(c) = R(1,2);
-                end
-                quality_report(4,c) = SCI(c);
+                % QT-NIRS Cardiac QC:
+                % 4) Scalp Coupling Index 
+                % 5) Peak Spectral Power
+                % Quality Testing score (proportion of SCI and PSP window
+                % flags)
 
-                % ---- 5) Peak Spectral Power ----
-                %x1 = dheart(:,c);
-                %x2 = dheart(:,c + numchannels);
+                % QT-NIRS-style thresholds
+                sciThreshold = get_thresh(params, "SCI", 0.7);
+                pspThreshold  = get_thresh(params, "PSP", 0.1);
                 
-                %T = round(10 * fs);  % 10-second window (Pollonini uses ~10 s)
-                %nWin = length(x1) - T + 1;
+                winSec  = win_size;
+                winSamp = round(winSec * fs);
+                nWin    = floor(size(dheart,1) / winSamp);
                 
-                %SCIwin = nan(nWin,1);
-                %PPwin  = nan(nWin,1);   % Peak power per window
-                
-                %for t = T:length(x1)
-                
-                    % Windowed segments
-                    %w1 = x1(t-T+1:t);
-                    %w2 = x2(t-T+1:t);
-                
-                    % Normalize 
-                    %w1 = w1 / (std(w1) + eps);
-                    %w2 = w2 / (std(w2) + eps);
+                QTscore  = nan(1, numchannels);
 
-                    % Zero-lag normalized cross-correlation
-                    %cxy = mean(w1 .* w2);          % zero lag
-                    %SCIwin(t-T+1) = cxy;
+                x1 = dheart(:, c);
+                x2 = dheart(:, c + numchannels);
                 
-                    % Full cross-correlation (for peak power)
-                    %cc = xcorr(w1, w2, 'none') / T;
+
+                x1 = x1 ./ std(x1);
+                x2 = x2 ./ std(x2);
+
+                SCIwin = nan(nWin, 1);
+                PSPwin = nan(nWin, 1);
                 
-                    % Power spectrum of cross-correlation
-                    %[pxx, f] = periodogram(cc, hamming(length(cc)), [], fs);
+                for w = 1:nWin
+                    idx1 = (w-1)*winSamp + 1;
+                    idx2 = w*winSamp;
                 
-                    % Peak spectral power
-                    %PPwin(t-T+1) = max(pxx);
+                    w1 = x1(idx1:idx2);
+                    w2 = x2(idx1:idx2);
+                
+                    similarity = xcorr(w1, w2, 'unbiased');
                     
-                %end
+                    if any(abs(similarity) > eps)
+                        similarity = length(w1) * similarity ./ ...
+                            sqrt(sum(abs(w1).^2) * sum(abs(w2).^2));
+                        similarity(isnan(similarity)) = 0;
                 
-                % Aggregate metrics
-                %SCI       = mean(SCIwin, 'omitnan');
-                %PP(c) = mean(PPwin,  'omitnan');
-                PP(c) = 0;
-                quality_report(5,c) = PP(c);
+                        SCIwin(w) = similarity(length(w1));
+                        %R = corrcoef(w1, w2);
+                        %SCIwin(w) = R(1, 2);
+                        
+                        [pxx, f] = periodogram(similarity, hamming(length(similarity)), ...
+                            length(similarity), fs, 'power');
+                         bandMask = (f >= 0.5) & (f <= 2.5);
+                
+                        if any(bandMask)
+                            PSPwin(w) = max(pxx(bandMask));
+                        else
+                            PSPwin(w) = NaN;
+                        end
+                     end
+                 end
+                
+                goodWin = (SCIwin >= sciThreshold) & (PSPwin >= pspThreshold);
+                
+                QTscore(c) = mean(goodWin, 'omitnan');
+                
+                quality_report(4,c) = mean(SCIwin, 'omitnan');
+                quality_report(5,c) = mean(PSPwin, 'omitnan');
+                quality_report(6,c) = QTscore(c);
 
-
-                % ---- 6) SD Signal/Noise Ratio ----
-                ratio1 = std(dheart(:,c))/std(dsignal(:,c));
-                ratio2 = std(dheart(:,c+numchannels))/std(dsignal(:,c+numchannels));
-                CHV(c) = mean([ratio1; ratio2]);
-                quality_report(6,c) = CHV(c);
-
-
-                %figure()
-                %plot(f,psd1)
-                %title(strcat('Channel- ', num2str(c)))
-                %hold on
-                %plot(f,psd2, 'r')
 
                 % ---- 7) Bad Channel Criterion ----   
                 prop_bad_selected = false;
@@ -629,7 +618,7 @@ for i = 1:length(groupdirs)
                     metric = selected_metrics(m);
                 
                     switch metric
-               
+
                         case "SNR"
                             thresh = get_thresh(params, "SNR", 20);
                             value = quality_report(3,c);
@@ -640,13 +629,13 @@ for i = 1:length(groupdirs)
                             value = quality_report(4,c);
                             bad = value < thresh;
                
-                        case "PP"
-                            thresh = get_thresh(params, "PP", 0.1);
+                        case "PSP"
+                            thresh = get_thresh(params, "PSP", 0.1);
                             value = quality_report(5,c);
                             bad = value < thresh;
 
-                        case "CHV"
-                            thresh = get_thresh(params, "CHV", 1);
+                        case "QT"
+                            thresh = get_thresh(params, "QT", 0.75);
                             value = quality_report(6,c);
                             bad = value < thresh;
                 
@@ -732,6 +721,16 @@ for i = 1:length(groupdirs)
             
             switch method
                 
+                % ===============================
+                % Temporal Derviative Distribution Repair
+                % ===============================
+                case "tddr"
+            
+                    dod_corrected = TDDR(dod.dataTimeSeries, fs);
+                    dodMC = dod;
+                    dodMC.dataTimeSeries = dod_corrected;
+                    fprintf('Motion Correction: Temporal Derviative Distribution Repair \n');
+
                 % ===============================
                 % Targetted PCA (Homer3)
                 % ===============================
@@ -937,17 +936,29 @@ for i = 1:length(groupdirs)
             
             end
 
+
+
+            outfile_tmp = fullfile(outpath, ...
+                [subjectID '_raw_segmented.mat']);
+
+            save(outfile_tmp, ...
+                    'snirf_trimmed');
+
             outfile = fullfile(outpath, ...
                 [subjectID '_preprocessed.mat']);
             
+            if exist(outfile, 'file')
+                delete(outfile);
+            end
+
             if has_aux
                 save(outfile, ...
                     'HbO', 'HbR', 'HbT', 'dhbFilt','tri_raw', 'idx_short', ...
-                    'accelerometer', 'quality_report', 'fs', 't', 'SD', 'probeInfo');
+                    'accelerometer', 'quality_report', 'fs', 't', 'SD', 'probeInfo', '-v7.3');
             else
                 save(outfile, ...
                     'HbO', 'HbR', 'HbT', 'dhbFilt', 'tri_raw', 'idx_short', ...
-                    'quality_report', 'fs', 't', 'SD', 'probeInfo');
+                    'quality_report', 'fs', 't', 'SD', 'probeInfo', '-v7.3');
             end
             
             end
@@ -963,7 +974,7 @@ else
     warning('No quality reports collected — skipping group QC summary');
 end
 
-end   % ← THIS MUST CLOSE THE MAIN FUNCTION
+end   
 
 
 % ===============================
@@ -1209,4 +1220,177 @@ save(outfile_mat, 'group_qc');
 fprintf(' - MATLAB QC object: %s\n', outfile_mat);
 fprintf('=================================================\n');
 
+end
+
+% Please cite TDDR function if of use: 
+%   Fishburn F.A., Ludlum R.S., Vaidya C.J., & Medvedev A.V. (2019). 
+%   Temporal Derivative Distribution Repair (TDDR): A motion correction 
+%   method for fNIRS. NeuroImage, 184, 171-179.
+%   https://doi.org/10.1016/j.neuroimage.2018.09.025
+
+function signal_corrected = TDDR( signal , sample_rate )
+% This function is the reference implementation for the TDDR algorithm for 
+%   motion correction of fNIRS data, as described in:
+%
+%   Fishburn F.A., Ludlum R.S., Vaidya C.J., & Medvedev A.V. (2019). 
+%   Temporal Derivative Distribution Repair (TDDR): A motion correction 
+%   method for fNIRS. NeuroImage, 184, 171-179.
+%   https://doi.org/10.1016/j.neuroimage.2018.09.025
+%
+% Usage:
+%   signals_corrected = TDDR( signals , sample_rate );
+%
+% Inputs:
+%   signals: A [sample x channel] matrix of uncorrected optical density data
+%   sample_rate: A scalar reflecting the rate of acquisition in Hz
+%
+% Outputs:
+%   signals_corrected: A [sample x channel] matrix of corrected optical density data
+%
+
+%% Iterate over each channel
+nch = size(signal,2);
+if nch>1
+    signal_corrected = zeros(size(signal));
+    for ch = 1:nch
+        signal_corrected(:,ch) = TDDR( signal(:,ch) , sample_rate );
+    end
+    return
+end
+
+%% Preprocess: Separate high and low frequencies
+filter_cutoff = .5;
+filter_order = 3;
+Fc = filter_cutoff * 2/sample_rate;
+signal_mean = mean(signal);
+signal = signal - signal_mean;
+if Fc<1
+    [fb,fa] = butter(filter_order,Fc);
+    signal_low = filtfilt(fb,fa,signal);
+else
+    signal_low = signal;
+end
+signal_high = signal - signal_low;
+
+%% Initialize
+tune = 4.685;
+D = sqrt(eps(class(signal)));
+mu = inf;
+iter = 0;
+
+%% Step 1. Compute temporal derivative of the signal
+deriv = diff(signal_low);
+
+%% Step 2. Initialize observation weights
+w = ones(size(deriv));
+
+%% Step 3. Iterative estimation of robust weights
+while iter < 50
+    
+    iter = iter + 1;
+    mu0 = mu;
+    
+    % Step 3a. Estimate weighted mean
+    mu = sum( w .* deriv ) / sum( w );
+    
+    % Step 3b. Calculate absolute residuals of estimate
+    dev = abs(deriv - mu);
+
+    % Step 3c. Robust estimate of standard deviation of the residuals
+    sigma = 1.4826 * median(dev);
+
+    % Step 3d. Scale deviations by standard deviation and tuning parameter
+    r = dev / (sigma * tune);
+    
+    % Step 3e. Calculate new weights accoring to Tukey's biweight function
+    w = ((1 - r.^2) .* (r < 1)) .^ 2;
+
+    % Step 3f. Terminate if new estimate is within machine-precision of old estimate
+    if abs(mu-mu0) < D*max(abs(mu),abs(mu0))
+        break;
+    end
+
+end
+
+%% Step 4. Apply robust weights to centered derivative
+new_deriv = w .* (deriv-mu);
+
+%% Step 5. Integrate corrected derivative
+signal_low_corrected = cumsum([0; new_deriv]);
+
+%% Postprocess: Center the corrected signal
+signal_low_corrected = signal_low_corrected - mean(signal_low_corrected);
+
+%% Postprocess: Merge back with uncorrected high frequency component
+signal_corrected = signal_low_corrected + signal_high + signal_mean;
+
+end
+
+function peakHz = plot_cardiac_peak_one_subject(d, t, bandLow, bandHigh)
+% plot_cardiac_peak_one_subject
+% d         : time x channels matrix
+% t         : time vector (same length as rows of d)
+% bandLow   : lower frequency bound for search (e.g., 0.5)
+% bandHigh  : upper frequency bound for search (e.g., 2.5)
+
+    if nargin < 3 || isempty(bandLow)
+        bandLow = 0.5;
+    end
+    if nargin < 4 || isempty(bandHigh)
+        bandHigh = 2.5;
+    end
+
+    % Ensure column vector
+    t = t(:);
+
+    % Estimate sampling rate from time vector
+    dt = median(diff(t));
+    fs = 1 / dt;
+
+    fprintf('Estimated sampling rate: %.3f Hz\n', fs);
+
+    % Remove mean from each channel
+    x = detrend(d, 'linear');
+
+    % Compute power spectrum for each channel
+    nCh = size(x, 2);
+    allPxx = [];
+    fvec = [];
+
+    for ch = 1:nCh
+        [Pxx, f] = pwelch(x(:, ch), [], [], [], fs);
+
+        if isempty(fvec)
+            fvec = f;
+            allPxx = zeros(length(Pxx), nCh);
+        end
+
+        allPxx(:, ch) = Pxx;
+    end
+
+    % Average spectrum across channels
+    meanPxx = mean(allPxx, 2, 'omitnan');
+
+    % Search for peak in cardiac band
+    cardiacMask = (fvec >= bandLow) & (fvec <= bandHigh);
+    fCard = fvec(cardiacMask);
+    pCard = meanPxx(cardiacMask);
+
+    [peakPower, idxPeak] = max(pCard);
+    peakHz = fCard(idxPeak);
+
+    fprintf('Dominant cardiac peak: %.3f Hz (%.1f bpm)\n', peakHz, peakHz * 60);
+    fprintf('Peak power in band: %.6g\n', peakPower);
+
+    % Plot
+    figure;
+    plot(fvec, 10*log10(meanPxx), 'LineWidth', 1.5);
+    hold on;
+    xline(bandLow, '--', 'Band low');
+    xline(bandHigh, '--', 'Band high');
+    xline(peakHz, 'r--', sprintf('Peak %.2f Hz', peakHz));
+    xlabel('Frequency (Hz)');
+    ylabel('Power (dB)');
+    title('Mean Power Spectrum Across Channels');
+    grid on;
 end
